@@ -1,7 +1,7 @@
 # Business-Intelligence-Project
 Predicting telemarketing success in the banking sector. An assignment based on Moro, Cortez and Rita (2014) “ A data-driven approach to predict the success of bank telemarketing ”
 
-*Introduction*
+## Introduction
 Marketing selling campaigns are a ubiquitous strategy to improve sales and enhance business across
 a wide variety of industries. Telemarketing is a specific type of sales campaign that is operationalized
 through a contact center. Typically, telemarketing can be divided into inbound and outbound contacts,
@@ -14,7 +14,7 @@ a subscription to a long-term deposit. They perform their own feature selection 
 features and proceed to fit models using Logistic Regression (LR), Decision Trees (DT), Support Vector
 Machines (SVM) and Neural Networks (NN).
 
-*Assignment*
+## Assignment
 You and your teammates are data analysts at a consultancy company that provides their clients with
 data driven suggestions on a wide range of business problems. You have been approached by a
 Portugese bank, lets call them Sberbankos, to help them gain insights for what type of people in their
@@ -28,7 +28,7 @@ set of potential customers whom have been contacted by Sberbankos, but for whom 
 yet whether they will accept the subscription. You are requested to forecast which of these potential
 customers will eventually subscribe to the long-term deposit.
 
-*Data*
+## Data
 On the shared folder Business Intelligence/student project you will find the files “training data” and
 “test data”. Both files contain real data on 16 features (variables), describing some demographic and
 campaign-related characteristics for each (potential) customer. The training dataset contains 10,000
@@ -38,7 +38,7 @@ information is not available for the dataset with potential customers, which con
 randomly selected instances of potential future customers. You can find the description of each
 variable in the file “Variables”.
 
-*Instructions*
+## Instructions
 You must write a report to the management team of Sberbankos. Your analysis needs to consist of
 two components: (i) a descriptive investigation aimed at understanding the current and potential
 customer database and (ii) a predictive exercise in which you predict whom of the potential customers
