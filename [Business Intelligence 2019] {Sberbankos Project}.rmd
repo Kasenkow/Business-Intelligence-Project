@@ -1,0 +1,732 @@
+---
+title: "Social Network Analysis <br/> Home Assignment 4"
+authors: '{Anton Kasenkov,<br/> Qiuyue Chen,<br/> Irina Petrova}'
+date: "10th of March, 2019"
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+# Descriptive Analysis
+
+First, we load required packages:
+```{r, echo=FALSE}
+options(stringsAsFactors = T)
+rm(list = ls())
+library(tidyverse)
+library(mvnmle)
+library(BaylorEdPsych)
+library(caret)
+library(pROC)
+```
+# Descriptive
+```{r}
+### reading the data
+data <- read.csv(file.choose()) # this is training data
+str(data)
+```
+Now we have our training set. Preprocessing...
+```{r}
+finalTest <- read.csv(file.choose())# this is test data
+
+data <- data[-1] # this is irrelevant
+# changing the order of levels of factors:
+data$y <- factor(data$y, levels = c("yes", "no"))
+data$default <- factor(data$default, levels = c("yes", "no"))
+data$loan <- factor(data$loan, levels = c("yes", "no"))
+data$housing <- factor(data$housing, levels = c("yes", "no"))
+
+indicesX <- finalTest[1]
+finalTest <- finalTest[-1]
+finalTest$default <- factor(finalTest$default, levels = c("yes", "no"))
+finalTest$loan <- factor(finalTest$loan, levels = c("yes", "no"))
+finalTest$housing <- factor(finalTest$housing, levels = c("yes", "no"))
+
+# variable "month"'s levels are in alphabetical order, changing that:
+data$month <- factor(data$month, levels = c("jan", "feb", "mar", "apr",
+                                            "may", "jun", "jul", "aug",
+                                            "sep", "oct", "nov", "dec"))
+finalTest$month <- factor(finalTest$month, levels = c("jan", "feb", "mar", "apr",
+                                                 "may", "jun", "jul", "aug",
+                                                 "sep", "oct", "nov", "dec"))
+```
+Getting descriptive stats
+```{r}
+summary(data)
+```
+```{r}
+(t_y <- table(data$y))
+prop.table(t_y)
+```
+The distribution pf classes is uneven, but it still somewhat balanced, we should be careful in using of accuracy as a metric because naive classification of all instances as "not subscribed" would already give us 66% accuracy
+```{r}
+# Return names of two most correlated variables:
+df <- abs(cor(data[sapply(data, is.numeric)]))    
+diag(df) <- 0
+inds <- which(df == max(df), arr.ind = T)
+rpear <- round(df[which.max(df)], 2)
+print(c(rownames(inds), paste(c("r = ", rpear), collapse = " ")))
+```
+Given the nature of the variables it is an interesting result, we would get to interpretation below...
+
+Missing Data exploration
+```{r}
+anyNA(data) 
+```
+There is no explicitly coded missing values.
+However, there are several "unknown" values in the following factors:
+```{r}
+temp_var <- sapply(names(data), function(x) sum(data[x] == "unknown"))
+temp_var[temp_var > 0]
+```
+Is it probable that observations with missngs in variables "job" and "education" can be safely removed or imputed?
+```{r}
+temp_data <- data
+temp_data$job <- replace(temp_data$job, temp_data$job == "unknown", NA)
+temp_data$education <- replace(temp_data$education, temp_data$education == "unknown", NA)
+LittleMCAR(temp_data)$p.value
+```
+Unfortunatelly, we have to reject the null hypothesis of our Little's Missingness Completely At Random (MCAR) test. Still, it seems like some effort has been applied to deal with NAs. The addition of a new category (i.e. "unknown") for factors to mark NAs is a common practice. So we will leave those variables as they were.
+
+As for the 6200 "unknown" values in "poutcome" variable, they perfectly correspond to
+values "0" of the variable "previous" and values "-1" of the "pdays" variable:
+```{r}
+all.equal(data$poutcome == "unknown", data$previous == 0, data$pdays == -1)
+```
+And the "unknown" value of the "contact" variable corresponeds in ~99,24% of cases to previous 3 variables:
+```{r}
+(t1 <- table(data$contact == "unknown", data$previous == 0))
+t1[2,2]/sum(t1[2,])
+```
+
+To sum up, the new clients obviously have no history with the marketing campaign, thus there could not be information on neither the number of days that passed by after the client was last contacted from a previous campaig nor on outcome of the previous marketing campaign nor on number of contacts performed before this campaign and for this client.
+Those are simply meaningless. However, due to high number of cooccurences between unknown contact communication type and the lack of prior history, we could assume that the information on the communication type is gathered after the marketing campaign is over. So, we have attributes that are correlated. This could affect the interpretability of our models...
+
+We could compare the ratio of marketing campaing success in the groups of clients with and without prior history:
+```{r}
+table(data$y, data$previous == 0)
+```
+It is clear that the majority of the clients are "new ones" (~77.5%) and that while the rate of subscription for "old" clients is almost 55%, for the new clientele this number is approximately 27%.
+
+The following chunk shows only some ideas that we tried. Do not run it
+```{r, eval = FALSE}
+# Preprocessing1 - remove variable "default"
+# (Didn't help with GBM for ROC)
+# data$default <- NULL
+# finalTest$default <- NULL
+
+# Preprocessing2 - cyclical variables:
+# (Didn't help with GBM for ROC)
+# (Didn't help with GLMnet for Sensitivity)
+# levels(data$month) <- 1:12
+# data <- data %>%
+#        mutate(month_sin = sin(2 * pi * as.integer(month) / 12),
+#               month_cos = cos(2 * pi * as.integer(month) / 12),
+#               day_sin = sin(2 * pi * day / 31),
+#               day_cos = cos(2 * pi * day / 31))
+# data$month <- NULL
+# data$day <- NULL
+# changing the order of columns so that target feature is the last one:
+# data <- data %>% select(1:14, 16:19, 15)
+
+```
+## Looking at the data. Factors
+```{r}
+# function to calculate percentages of factors' groups:
+give_perc <- function(x) {
+        t <- table(data[x])
+        round(t / sum(t), 2)
+}
+# choosing variables of interest:
+vars_of_interest <- sort(c("loan", "housing", "marital", "education", "job",
+                           "default", "contact", "poutcome", "y", "month"))
+# creating a list of groups percentages for factors:
+fact_list <- lapply(vars_of_interest, give_perc)
+names(fact_list) <- vars_of_interest
+
+## Loans
+# Personal loans are not as popular as Housing loans:
+fact_list$housing
+fact_list$loan
+mosaicplot(with(data, table(loan, housing, y)),
+           main = "Loans: Personal and Housing",
+           xlab = "Personal", ylab = "Housing", col = c("#005bbb", "#ffd500"))
+```
+Feature "default" is not very informative, since it has only 2% in the "yes" group. Perhaps, it could be eliminated in the resulting model...
+```{r}
+fact_list$default
+```
+Job type
+Let's look at our job type distribution.
+Management and blue-color are the top two job types in our dataset...
+```{r}
+fact_list$job
+
+job <- sort(table(data["job"]))
+par(mar = c(7.1, 4.1, 4.1, 2.1))
+barplot(job, main = "Type of job",
+        ylab = "Number of cases",
+        las = 2,
+        col = rainbow(length(levels(data$job))))
+```
+We could also look at the percentage of subscriptions to a term deposit in these groups:
+```{r}
+ggplot(data, aes(x = job, fill = y)) +
+        geom_bar(col = "black")+
+        ggtitle("Type of Job")+
+        ylab("")+
+        scale_x_discrete(label = abbreviate)+
+        scale_fill_brewer(palette = "PRGn")+
+        theme(axis.title.x = element_blank(),
+              axis.ticks.x = element_blank())
+```
+it is clear that groups "student", "retired" and "unemployed" are at the top of our rating with respective 62, 53 and 44 % of subscriptions. "blue-collar" and "entrepreneur" are at the bottom of this list:
+```{r}
+with(data, table(job, y)) %>%
+        prop.table(., 1) %>%
+        round(., 2)
+```
+Nevertheless, given the above mentioned sizes of classes of employment variable ("job"), we should conclude, that management, technichian and blue-collar are of higher priority to our cause.
+
+Marital Status.
+Approx. 58% are married, 30% are single and the rest are either divorced or widowed:
+```{r}
+fact_list$marital
+ggplot(data, aes(x = marital, fill = marital)) +
+        geom_bar(col = "black")+
+        ggtitle("Marital Status")+
+        ylab("Number of cases")+
+        scale_fill_manual(values = c("#AE1C28", "#FFFFFF", "#21468B"))+
+        theme(axis.title.x = element_blank(),
+              axis.text.x = element_blank(),
+              axis.ticks.x = element_blank())
+```
+Let's look at the proportions of subscriptions in our groups determined by marital status:
+```{r}
+mar_table <- with(data, table(marital, y))
+round(prop.table(mar_table, 1), 2)
+```
+the numbers are close, which would mean that te subscription rate doesn't differ by the marital status and this could be seen on the plot:
+```{r}
+ggplot(data, aes(x = marital, fill = y)) +
+        geom_bar(col = "black")+
+        ggtitle("Marital Status")+
+        ylab("Number of cases")+
+        scale_fill_manual(values = c("#AE1C28", "#FFFFFF"))+
+        theme(axis.title.x = element_blank(),
+              axis.text.x = element_blank(),
+              axis.ticks.x = element_blank())
+```
+If this feature doesn't affect our target variable we can get rid off of it. However, we have to be sure, so let's check that hypothesis with Chi-squared test:
+```{r}
+chisq.test(data$marital, data$y)$p.value
+```
+It seems that there is a statistically significant difference between the two factors. Still, we have a suspicion that this difference is created by the presence of the "single" class. Let's check that out:
+```{r}
+temp_data <- data %>% filter(marital != "single")
+temp_data$marital <- factor(temp_data$marital)
+chisq.test(temp_data$marital, temp_data$y)$p.value
+```
+Yes, we were probably right. With this result we cannot reject the null-hypothesis. The main colclusion here is that perhaps the final model can be improved if the two. levels ("divorced" and "married") of the marital status factor would be merged.
+
+Education
+The majority (~ 64%) have either secondary or tertiary education:
+```{r}
+fact_list$education
+ggplot(data, aes(x = education, fill = y)) +
+        geom_bar(col = "black")+
+        ggtitle("Level of Education")+
+        ylab("Number of cases")+
+        guides(fill = guide_legend(title = "Subscribed?"))+
+        scale_fill_manual(values = c("#D00B0e", "#0039A6"))+
+        theme(panel.border = element_blank(),
+              panel.background = element_rect(fill = "white"),
+              panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              axis.ticks.x = element_blank())
+```
+As with the marital status we could probably benefit from merging some levels of "education" factor. Levels "tertiary" and "unknown" are somewhat close in subscription rate proportions:
+```{r}
+prop.table(with(data, table(education, y)), 1)
+```
+Let's check our assumption about the difference between groups:
+```{r}
+temp_data <- data %>% filter(education == c("tertiary", "unknown"))
+temp_data$education <- factor(temp_data$education)
+chisq.test(temp_data$education, temp_data$y)$p.value
+```
+Yes, perhaps the subscription proportions in groups ""tertiary" and "unknown" are somewhat related
+
+Month
+How the data varies by months:
+```{r}
+sort(fact_list$month, decreasing = T)
+```
+the distribution is uneven. this could affect models
+```{r}
+ggplot(data, aes(x = month, fill = y)) +
+        geom_bar()+
+        ggtitle("Monthly Subscription to a Term Deposit")+
+        ylab("")+
+        guides(fill = guide_legend(title = "Has the client\n subscribed to\n a term deposit?"))+
+        scale_fill_brewer(palette = "Spectral")+
+        theme_dark()
+# Alternative plot:
+ggplot(data, aes(x = month, fill = y))+
+        geom_bar()+
+        coord_polar(start = 0)+
+        theme_minimal()+
+        scale_fill_brewer(palette = "Spectral")+
+        ylab("Count")+
+        ggtitle("Subscription by Months")
+```
+looking at the data. Continuous variables
+Age. Description of this distribution is missing:
+```{r}
+ks.test(jitter(data$age), "pnorm", mean(data$age), sd(data$age))
+```
+Compare the subscription rate by age 
+```{r}
+ggplot(as.data.frame(table(data$age, data$y)), aes(x = Var1, y = Freq, fill = Var2))+
+        geom_bar(stat = 'identity', position = 'dodge')+
+        ggtitle("Age")+
+        ylab("Number of cases")+
+        guides(fill = guide_legend(title = "Subscribed?"))
+```
+check the subscription rate
+```{r}
+ggplot(data.frame(prop.table(with(data, table( age, y)), 1)),
+       aes(x=age, y = Freq, fill=y)) + 
+        geom_bar(stat="identity")
+```
+Balance
+```{r}
+ggplot(data, aes(x = balance, y = y, fill = y))+
+        geom_dotplot(alpha = 0.5)+
+        xlim(c(-3000, 60000))+
+        ggtitle("Average Balance in Groups")+
+        guides(fill = guide_legend(title = "Subscribed?"))+
+        scale_fill_manual(values = c("#D82126", "#F8E92E"))+
+        theme(axis.title.y = element_blank(),
+              axis.ticks.y = element_blank())
+```
+Day
+If we look only at the days distribution, the underlying pattern is not very clear.
+It could be that some affects are the results of averaging of the data:
+```{r}
+ggplot(data, aes(x = day, fill = y))+
+        geom_bar()+
+        coord_polar(start = 0)+
+        theme_minimal()+
+        scale_fill_brewer(palette = "Spectral")+
+        ylab("Count")+
+        ggtitle("Subscription by Days")
+```
+Although, day of the month is a cyclical feature, it not as important as the day of the week. Hence, it should be analyzed in conjunction with month variable:
+```{r}
+qplot(day, data = data, fill = y, ylim = c(0,100)) + facet_grid(cols = vars(month))
+```
+Here we can see more information, but it looks like the data was gathered during several years...
+
+# Predictive Modelling
+
+In order to forecast which of the potential customers possess high chances of subscribing to a long term deposit, our agency conducted study of several models, using the labeled data as a training data set. The list of models consists of: Logistic Regression (we used generalized linear model - glmnet), Linear Discriminant Analysis (lda), Decision Trees (C5.0 algorithm), Support Vector Machine (with Radial Kernel), Gradient Boosted Machine (gbm), Neural Network with feature extracion (PCA neural network), Random Forest.
+We begin by splitting our data into training and testing parts (for model evaluation purposes)
+```{r}
+# Setting seed for reproducibility
+set.seed(42)
+
+# Train / test split:
+inTraining <- createDataPartition(data$y,
+                                  times = 1,
+                                  p = .75,
+                                  list = FALSE)
+
+trainDF <- data[ inTraining, ]
+testDF  <- data[-inTraining, ]
+
+``` 
+
+ We need a model (among others) "that aims to deliver the highest possible true-positive rate while trying to keep the false-positive rate below 10%".
+ True-positive rate = Sensitivity
+ False-positive rate = 1 - Specificity
+ To choose the optimal model
+ We create our own function for the metric, based on the existing
+ We could use similar technique as in F-beta-score (weighted harmonic function):
+ 
+```{r}
+FGamma_score <- function(data, lev = NULL, model = NULL, anton = 2) {
+        Recall1 <- sensitivity(data = data$pred, reference = data$obs,
+                               positive = lev[1])
+        Specificity1 <- specificity(data$pred, data$obs)
+        Fgamma_score <- (1 + anton^2) * (Specificity1 * Recall1)/
+                (anton^2 * Specificity1 + Recall1)
+        return(c(fignya = Fgamma_score, FPR = 1 - Specificity1, Sensitivity = Recall1))
+}
+ 
+``` 
+We set resampling method as 5 times repeated 10-fold cross-validation
+```{r}
+# Creating object for Accuracy training:
+objControlAcc <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 5,
+                              summaryFunction = defaultSummary,
+                              classProbs = TRUE)
+
+# creating object for Sensitivity training:
+
+objControlSens <- trainControl(method = "repeatedcv",
+                               number = 10,
+                               repeats = 5,
+                               summaryFunction = FGamma_score,
+                               classProbs = TRUE)
+
+# creating object for ROC training:
+
+objControlROC <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 5,
+                              summaryFunction = twoClassSummary,
+                              classProbs = TRUE)
+```
+Next, we would build several basic models to choose from for each of 3 cases:
+Accuracy maximization, Sensitivity optimization while keeping FPR < 10% and AUC-ROC maximization.
+### Accuracy. Creating models with default parameters:
+```{r message=FALSE, warning=FALSE}
+## Logistic Regression (GLM-net):
+
+set.seed(42)
+glmnetModelAcc <- train(y ~ ., data = trainDF,
+                        method = "glmnet",
+                        trControl = objControlAcc,
+                        metric = "Accuracy",
+                        preProcess = c("center", "scale"))
+
+## LDA:
+
+set.seed(42)
+ldaModelAcc <- train(y ~., data = trainDF,
+                        method = "lda",
+                        trainControl = objControlAcc,
+                        metric = "Accuracy",
+                        preProcess = c("center", "scale"))
+
+## DT (using C5.0 algorithm):
+
+set.seed(42)
+dtModelAcc <- train(y ~., data = trainDF, 
+                    method = "C5.0", 
+                    trControl = objControlAcc,  
+                    metric = "Accuracy",
+                    preProc = c("center", "scale"))
+
+## GBM:
+
+set.seed(42)
+gbmModelAcc <- train(y ~., data = trainDF,
+                     method = "gbm", 
+                     trControl = objControlAcc,  
+                     metric = "Accuracy",
+                     verbose = FALSE,
+                     preProc = c("center", "scale"))
+
+## RF:
+
+set.seed(42)
+rfModelAcc <- train(y ~., data = trainDF,
+                    method = "rf", 
+                    trControl = objControlAcc,  
+                    metric = "Accuracy",
+                    preProc = c("center", "scale"))
+
+## Neural Network with PCA:
+
+set.seed(42)
+nnModelAcc <- train(y ~., data = trainDF,
+                    method = "pcaNNet", 
+                    trControl = objControlAcc,  
+                    metric = "Accuracy",
+                    verbose = FALSE,
+                    preProc = c("center", "scale"))
+```
+Now it's time to choose the most Accurate model, based on default parameters:
+Creating list of models to compare
+```{r}
+accuracy_models <- list(LR = glmnetModelAcc,
+                        LDA = ldaModelAcc,
+                        DT = dtModelAcc,
+                        SVM = svmModelAcc,
+                        GBM = gbmModelAcc,
+                        RF = rfModelAcc,
+                        NN = nnModelAcc)
+
+# a function to automate a process
+accuracy_results <- function(accuracy_models,
+                             newdata = testDF[ , 1:16],
+                             obs = testDF[ , 17],
+                             type = "raw") {
+        preds <- lapply(accuracy_models, function(x) {
+                predict(object = x, newdata = newdata, type = type)
+        })
+        res <- sapply(preds, function(y) {
+                postResample(pred = y, obs = obs)
+        })
+        return(res)
+}
+
+# results:
+accuracy_results(accuracy_models = accuracy_models)
+```
+Our C5.0 model performed better than others. Although, GBM, random forest and neural net also did well. Perhaps, it would be better to deploy an extensive parameter tuning, since results could vary and we might have a different rating of performance then. Unfortunately, we do not have a high powered computer to do this, so we'll just pick C5.0 as our final algorithm for "accurate" model.
+But we can still look at the performance of our model through the lens of parameter tuning (simplified version)
+```{r message=FALSE, warning=FALSE}
+trellis.par.set(caretTheme())
+plot(glmnetModelAcc)
+```
+our resulting generalized linear model using alpha parameter = 1, which means that it is rather LASSO, than ridge.
+we don't need to plot anything for LDA since it doesn't have any parameters
+```{r}
+plot(dtModelAcc)
+```
+seems like our C5.0 algorithm doesn't need predictior winnowing (i.e. feature selection) and performes better with 20 boosting iterations
+```{r}
+plot(gbmModelAcc)
+#plot(gbmModelAcc, metric = "Accuracy", plotType = "level", scales = list(x = list(rot = 90)))
+```
+Our Gradient Boosting Machine performed better with over 140 boosting iterations and with maximal tree depth = 3. Also the graph above shows that we could try increasing the depth of the trees to get a couple additional percents in accuracy.
+```{r}
+plot(rfModelAcc)
+```
+Like in previous case it seems that the number of iterated parameters wasn't good enough.
+```{r}
+plot(svmModelAcc)
+```
+Support Vector Machine (radial kernel) also shows some signs of potential improvement using extensive parameter tuning. Unfortunately, the algorithm is quite demanding and the machine on which we running it keeps crushing down.
+```{r}
+plot(nnModelAcc)
+```
+The hidden units and weight decay affect how fast the neural network will learn. Parameter tuning is especially important in this case.
+
+### Sensitivity/FPR. Creating models with default parameters:
+```{r message=FALSE, warning=FALSE}
+# Logistic Regression:
+set.seed(42)
+glmnetModelSens <- train(y ~., data = trainDF, 
+                         method = "glmnet", 
+                         trControl = objControlSens,  
+                         metric = "fignya",
+                         preProcess = c("center", "scale"))
+
+# LDA:
+set.seed(42)
+ldaModelSens <- train(y ~., data = trainDF, 
+                         method = "lda", 
+                         trControl = objControlSens,  
+                         metric = "fignya",
+                         preProcess = c("center", "scale"))
+
+# DT (using C5.0 algorithm):
+set.seed(42)
+dtModelSens <- train(y ~., data = trainDF, 
+                    method = "C5.0", 
+                    trControl = objControlSens,  
+                    metric = "fignya",
+                    preProc = c("center", "scale"))
+
+# GBM:
+set.seed(42)
+gbmModelSens <- train(y ~., data = trainDF,
+                     method = "gbm", 
+                     trControl = objControlSens,  
+                     metric = "fignya",
+                     verbose = FALSE,
+                     preProc = c("center", "scale"))
+
+# RF:
+set.seed(42)
+rfModelSens <- train(y ~., data = trainDF,
+                    method = "rf", 
+                    trControl = objControlSens,  
+                    metric = "fignya",
+                    preProc = c("center", "scale"))
+
+# Neural Network with PCA:
+set.seed(42)
+nnModelSens <- train(y ~., data = trainDF,
+                    method = "pcaNNet", 
+                    trControl = objControlSens,  
+                    metric = "fignya",
+                    verbose = FALSE,
+                    preProc = c("center", "scale"))
+
+# SVM:
+set.seed(42)
+svmModelSens <- train(y ~., data = trainDF, 
+                     method = "svmRadial", 
+                     trControl = objControlSens,  
+                     metric = "fignya",
+                     preProcess = c("center", "scale"))
+```
+Now it's time to choose model for Sensitivity metric, based on default parameters:
+```{r}
+# Creating list of models to compare
+sensitivity_models <- list(LR = glmnetModelSens,
+                           LDA = ldaModelSens,
+                        DT = dtModelSens,
+                        GBM = gbmModelSens,
+                        NN = nnModelSens)
+
+# a function to automate a process
+sensitivity_results <- function(sensitivity_models,
+                             newdata = testDF[ , 1:16],
+                             reference = testDF[ , 17],
+                             type = "raw") {
+        preds <- lapply(sensitivity_models, function(x) {
+                predict(object = x, newdata = newdata, type = type)
+        })
+        confMs <- lapply(preds, function(y) {
+                confusionMatrix(data = y, reference = reference, positive = NULL)
+        })
+        res <- sapply(confMs, function(z) {
+                z$byClass[c(1,2)]
+        })
+        res[2,] <- 1 - res[2,]
+        rownames(res) <- c("TPR", "FPR")
+        return(res)
+}
+
+# results:
+sensitivity_results(sensitivity_models = sensitivity_models)
+```
+And again C5.0 algorithm shows the best results with sensitivity reaching almost 85%. But! almost all models failed to keep False-Positive rate under 10%. In this case we're not sure which model to choose...
+
+### AUC-ROC. Creating models with default parameters:
+```{r message=FALSE, warning=FALSE}
+# Logistic Regression:
+set.seed(42)
+glmnetModelROC <- train(y ~., data = trainDF, 
+                        method = "glmnet", 
+                        trControl = objControlROC,  
+                        metric = "ROC",
+                        preProcess = c("center", "scale"))
+
+# LDA:
+set.seed(42)
+ldaModelROC <- train(y ~., data = trainDF, 
+                        method = "lda", 
+                        trControl = objControlROC,  
+                        metric = "ROC",
+                        preProcess = c("center", "scale"))
+
+# DT (C5.0):
+set.seed(42)
+dtModelROC <- train(y ~., data = trainDF, 
+                        method = "C5.0", 
+                        trControl = objControlROC,  
+                        metric = "ROC",
+                        preProcess = c("center", "scale"))
+
+# GBM:
+set.seed(42)
+gbmModelROC <- train(y ~., data = trainDF, 
+                        method = "glmnet", 
+                        trControl = objControlROC,  
+                        metric = "ROC",
+                        preProcess = c("center", "scale"))
+
+# NN:
+set.seed(42)
+nnModelROC <- train(y ~., data = trainDF, 
+                     method = "pcaNNet", 
+                     trControl = objControlROC,  
+                     metric = "ROC",
+                     preProcess = c("center", "scale"))
+```
+Now it's time to choose the best model, based on the value of Area under ROC-curve
+```{r}
+# Creating list of models to compare
+ROC_models <- list(LR = glmnetModelROC,
+                        LDA = ldaModelROC,
+                        DT = dtModelROC,
+                        GBM = gbmModelROC,
+                        NN = nnModelROC)
+
+# a function to automate a process
+ROC_results <- function(ROC_models,
+                             newdata = testDF[ , 1:16],
+                             type = "prob") {
+        preds <- lapply(ROC_models, function(x) {
+                predict(object = x, newdata = newdata, type = type)
+        })
+        aucs <<- lapply(preds, function(y) {
+                roc(ifelse(testDF[ , 17] == "yes", 1, 0), y[[2]])
+        })
+        rocs <- sapply(aucs, function(z) {
+                z$auc[1]
+        })
+        return(rocs)
+}
+
+# results:
+ROC_results(ROC_models = ROC_models)
+```
+And again, C5.0 is the best algorithm. Let's check out ROC-graph for C5.0:
+```{r}
+par(pty="s")
+plot(aucs$DT)
+```
+Now it's time to tune our model (C5.0) for various metrics...
+```{r}
+set.seed(42)
+ModelAcc <- train(y ~., data = data,
+                    method = "C5.0",
+                    trControl = trainControl(method = "cv",
+                                             number = 10,
+                                             summaryFunction = defaultSummary,
+                                             classProbs = TRUE),
+                    tuneLength = 10,
+                    metric = "Accuracy",
+                    preProc = c("center", "scale"))
+set.seed(42)
+ModelSens <- train(y ~., data = data,
+                    method = "C5.0",
+                    trControl = trainControl(method = "cv",
+                                             number = 10,
+                                             summaryFunction = FGamma_score,
+                                             classProbs = TRUE),
+                    tuneLength = 10,
+                    metric = "fignya",
+                    preProc = c("center", "scale"))
+set.seed(42)
+ModelROC <- train(y ~., data = data,
+                    method = "C5.0",
+                    trControl = trainControl(method = "cv",
+                                             number = 10,
+                                             summaryFunction = twoClassSummary,
+                                             classProbs = TRUE),
+                    tuneLength = 10,
+                    metric = "ROC",
+                    preProc = c("center", "scale"))
+```
+It turns out that our model is not build of decision trees, but rather based on rules.
+```{r}
+accuracy_preds <- predict(object = ModelAcc,
+                          newdata = finalTest,
+                          type = "raw")
+sensitivity_preds <- predict(object = ModelSens,
+                          newdata = finalTest,
+                          type = "raw")
+ROC_preds <- predict(object = ModelROC,
+                             newdata = finalTest,
+                             type = "raw")
+
+# It may be a mistake, but all our models have the same parameters and thus - same predictions:
+all.equal(sensitivity_preds, accuracy_preds, ROC_preds)
+```
+Anyway, here's our final predictions, packed in a csv file:
+```{r}
+final_predictions <- cbind(indicesX, ROC_preds)
+write_csv(final_predictions, "predictions.csv")
+```
